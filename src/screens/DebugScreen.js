@@ -12,6 +12,14 @@ const cardLabel = (card) => card ? `${card.rank} of ${card.suit}` : 'None';
 export default function DebugScreen() {
   const { state, dispatch } = useGame();
   const [selectedJack, setSelectedJack] = useState(null);
+  const [eventLog, setEventLog] = useState([]);
+  const lastLoggedEvent = useRef(null);
+  const lastEvent = state?.lastEvent;
+  useEffect(() => {
+    if (!lastEvent || lastLoggedEvent.current === lastEvent) return;
+    lastLoggedEvent.current = lastEvent;
+    setEventLog((events) => [lastEvent, ...events].slice(0, 8));
+  }, [lastEvent]);
   const actionGuard = useRef(null);
   if (!actionGuard.current) actionGuard.current = createActionGuard();
   useBotTurns();
@@ -36,7 +44,26 @@ export default function DebugScreen() {
   const endedBy = state.players.find((entry) => entry.id === state.roundResult?.endedBy);
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 60, paddingBottom: 48 }}>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 24, paddingTop: 60, paddingBottom: 48 }}>
+      <View style={{ marginBottom: 16 }}>
+        <Text>Game info</Text>
+        {state.players.map((entry, index) => (
+          <Text key={entry.id}>
+            {entry.name}: {entry.hand.length} cards, total score {entry.score}
+            {entry.eliminated ? ' (eliminated)' : ''}
+            {index === state.currentPlayer ? ' <- turn' : ''}
+          </Text>
+        ))}
+        <Text>Draw pile: {state.drawPile.length}</Text>
+        <Text>Discard pile: {state.discardPile.length}</Text>
+        <Text>Last 8 events (newest first):</Text>
+        <ScrollView nestedScrollEnabled style={{ height: 160 }}>
+          {eventLog.map((event, index) => (
+            <Text key={index}>{JSON.stringify(event)}</Text>
+          ))}
+          {eventLog.length === 0 && <Text>No events yet.</Text>}
+        </ScrollView>
+      </View>
       <Text>Phase: {state.phase} | Round: {state.round}</Text>
       <Text>Current player: {player.name}</Text>
       <Text>Top discard: {cardLabel(topCard(state))}</Text>

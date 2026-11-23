@@ -5,7 +5,7 @@ const { scheduleBotTurn } = require('../src/hooks/scheduleBotTurn');
 const { createActionGuard } = require('../src/state/actionGuard');
 const c = (rank, suit) => ({ id: `${rank}-${suit}`, rank, suit });
 const fresh = () => gameReducer(null, { type: 'START_GAME', players: [
-  { name: 'Naval' }, { name: 'Bot 1', isBot: true }, { name: 'Bot 2', isBot: true },
+  { name: 'Nawal' }, { name: 'Bot 1', isBot: true }, { name: 'Bot 2', isBot: true },
 ] });
 
 function clock() {
@@ -102,14 +102,19 @@ test('Restart fully resets mid-round and both end-screen actions start playable 
       state.players[0].score = 510;
       state.players[0].eliminated = true;
       state.pendingDraw = 6;
+      state.pendingType = 'two';
+      state.pendingSkip = true;
       state.chosenSuit = 'clubs';
-      state.drawnCardId = 'old';
+      state.chosenRank = 'A';
       state.winnerId = phase === 'gameOver' ? 'p1' : null;
       const next = gameReducer(state, { type });
       assert.equal(next.phase, 'playing');
       assert.equal(next.pendingDraw, 0);
       assert.equal(next.chosenSuit, null);
-      assert.equal(next.drawnCardId, null);
+      assert.equal(next.pendingType, null);
+      assert.equal(next.pendingSkip, false);
+      assert.equal(next.chosenRank, null);
+      assert.equal('drawnCardId' in next, false);
       assert.equal(next.roundResult, null);
       if (type === 'RESTART' || phase === 'gameOver') {
         assert.equal(next.round, 1);
@@ -150,4 +155,58 @@ test('human elimination leaves two bots able to start and play the next round', 
   assert.notEqual(state, before);
   assert.notEqual(state.lastEvent.type, 'INVALID');
   assert.notEqual(state.currentPlayer, 0);
+});
+
+test('a duplicate 8 cannot play twice even when the same player keeps the turn', () => {
+  const state = gameReducer(null, { type: 'START_GAME', players: [{ name: 'Nawal' }, { name: 'Bot', isBot: true }] });
+  state.players[0].hand = [c('8', 'hearts'), c('8', 'clubs'), c('3', 'clubs')];
+  state.players[1].hand = [c('4', 'clubs')];
+  state.discardPile = [c('9', 'hearts')];
+  const next = gameReducer(state, { type: 'PLAY_CARD', cardId: '8-hearts', expectedState: state });
+  assert.equal(next.currentPlayer, 0);
+  assert.equal(next.players[0].hand.length, 2);
+  assert.equal(gameReducer(next, { type: 'PLAY_CARD', cardId: '8-clubs', expectedState: state }), next);
+});
+
+test('Restart cancels the old timer and allows exactly one fresh bot move', () => {
+  let state = fresh();
+  state.currentPlayer = 1;
+  const oldTimer = clock();
+  let dispatches = 0;
+  const dispatch = (action) => { dispatches++; state = gameReducer(state, action); };
+  const cleanup = scheduleBotTurn(state, dispatch, oldTimer.schedule, oldTimer.cancel);
+  state = gameReducer(state, { type: 'RESTART' });
+  cleanup();
+  const restarted = state;
+  oldTimer.fire();
+  assert.equal(dispatches, 0);
+  assert.equal(state, restarted);
+  assert.equal(state.currentPlayer, 0);
+  state.players[0].hand = [c('5', 'hearts'), c('3', 'clubs')];
+  state.discardPile = [c('9', 'hearts')];
+  state = gameReducer(state, { type: 'PLAY_CARD', cardId: '5-hearts' });
+  assert.equal(state.players[state.currentPlayer].isBot, true);
+  const newTimer = clock();
+  const stop = scheduleBotTurn(state, dispatch, newTimer.schedule, newTimer.cancel);
+  newTimer.fire();
+  newTimer.fire();
+  assert.equal(dispatches, 1);
+  assert.notEqual(state.lastEvent.type, 'INVALID');
+  stop();
+});
+
+test('a scheduled bot can accept a skip and advance to the next active player', () => {
+  let state = fresh();
+  state.currentPlayer = 1;
+  state.pendingSkip = true;
+  state.players[1].hand = [c('K', 'clubs')];
+  const timer = clock();
+  scheduleBotTurn(state, (action) => {
+    assert.equal(action.type, 'PASS');
+    state = gameReducer(state, action);
+  }, timer.schedule, timer.cancel);
+  timer.fire();
+  assert.equal(state.pendingSkip, false);
+  assert.equal(state.currentPlayer, 2);
+  assert.deepEqual(state.lastEvent, { type: 'SKIP', playerId: 'p1' });
 });

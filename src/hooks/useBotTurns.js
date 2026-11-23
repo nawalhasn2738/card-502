@@ -1,10 +1,12 @@
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 import { scheduleBotTurn } from './scheduleBotTurn';
 import { useGame } from '../state/GameContext';
 
 export default function useBotTurns() {
   const { state, dispatch } = useGame();
-  useEffect(() => {
+  // Cancel during commit on state replacement/unmount, before another timer
+  // callback can run. The reducer also rejects actions from an older state.
+  useLayoutEffect(() => {
     // Forward every bot action (PLAY_CARD, DRAW, or PASS) through the same
     // cancellable timer. Drawing already ends the turn in the engine.
     return scheduleBotTurn(state, dispatch);
