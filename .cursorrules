@@ -1,0 +1,6 @@
+- This is a React Native (Expo) card game project called card-502, JavaScript only, no TypeScript.
+- Files in src/logic/ are plain CommonJS (require/module.exports), pure functions, no React imports, never mutate state.
+- Do NOT change any file in src/logic/ unless I ask, and if you do, update tests/engine.test.js and keep all tests passing (npm run test:logic).
+- Use only React Native built-in components and StyleSheet. Do not add npm packages without asking me first.
+- Keep code simple and commented in plain English, because I must explain every file in a viva.
+- Folders: src/logic (rules), src/state (reducer/context), src/components, src/screens, src/theme.
