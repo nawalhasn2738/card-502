@@ -1,7 +1,8 @@
-const { CARD_POINTS, ACE_OF_SPADES_POINTS } = require('./constants');
+const { CARD_POINTS } = require('./constants');
 
 function cardPoints(card) {
-  if (card.rank === 'A' && card.suit === 'spades') return ACE_OF_SPADES_POINTS;
+  if ((card.rank === 'A' && card.suit === 'spades') ||
+      (card.rank === '7' && card.suit === 'hearts')) return 100;
   return CARD_POINTS[card.rank];
 }
 

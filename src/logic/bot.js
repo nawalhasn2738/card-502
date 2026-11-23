@@ -1,7 +1,7 @@
 const { SUITS } = require('./constants');
 const { nextActive } = require('./engine');
 const { getPlayableCards, isSevenOfHearts, isTwo, isAceOfSpades, isEight, isJack, topCard } = require('./rules');
-const { cardPoints } = require('./scoring');
+const { cardPoints, handPoints } = require('./scoring');
 
 function highestPoints(cards) {
   return cards.reduce((best, card) => cardPoints(card) > cardPoints(best) ? card : best);
@@ -21,16 +21,21 @@ function jackSuit(state, jack) {
 // Call during the playing phase. Ties keep hand order for deterministic decisions.
 function chooseBotMove(state) {
   const playable = getPlayableCards(state, state.currentPlayer);
-  let card = state.drawnCardId
-    ? playable.find((entry) => entry.id === state.drawnCardId)
-    : null;
-  if (!card && playable.length === 0) return { type: 'DRAW' };
-  if (!card) card = playable.find(isSevenOfHearts);
-  if (!card) {
-    const next = state.players[nextActive(state, state.currentPlayer)];
-    const specials = playable.filter((entry) => isTwo(entry) || isAceOfSpades(entry) || isEight(entry));
-    card = highestPoints(next.hand.length <= 3 && specials.length ? specials : playable);
+  const seven = playable.find(isSevenOfHearts);
+  const others = playable.filter((entry) => !isSevenOfHearts(entry));
+  let card;
+  if (others.length) {
+    if (state.pendingDraw > 0 || state.pendingSkip) card = others[0];
+    else {
+      const next = state.players[nextActive(state, state.currentPlayer)];
+      const special = others.find((entry) => isTwo(entry) || isAceOfSpades(entry) || isEight(entry));
+      card = next.hand.length <= 3 && special ? special : highestPoints(others);
+    }
+  } else if (seven) {
+    const remaining = state.players[state.currentPlayer].hand.filter((entry) => entry.id !== seven.id);
+    if (handPoints(remaining) <= 20) card = seven;
   }
+  if (!card) return { type: state.pendingSkip ? 'PASS' : 'DRAW' };
   const action = { type: 'PLAY_CARD', cardId: card.id };
   if (isJack(card)) action.chosenSuit = jackSuit(state, card);
   return action;

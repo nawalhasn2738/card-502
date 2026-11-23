@@ -13,7 +13,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "test:logic": "node --test tests/engine.test.js tests/bot.test.js"
+    "test:logic": "node --test tests/engine.test.js tests/bot.test.js tests/state.test.js"
   },
   "private": true
 }

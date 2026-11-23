@@ -2,7 +2,7 @@
 // No UI code in here, so it can be tested and explained on its own.
 // Invalid actions never throw: they return the same state with lastEvent = { type: 'INVALID', reason }.
 
-const { RULES, SUITS } = require('./constants');
+const { RULES, SUITS, RANKS } = require('./constants');
 const { createDeck, shuffle } = require('./deck');
 const { handPoints } = require('./scoring');
 const R = require('./rules');
@@ -45,8 +45,11 @@ function startRound(prev, rng = Math.random) {
   s.drawPile = shuffle(createDeck(), rng);
   s.discardPile = [];
   s.pendingDraw = 0;
+  s.pendingType = null;
+  s.pendingSkip = false;
   s.chosenSuit = null;
-  s.drawnCardId = null;
+  s.chosenRank = null;
+  s.winnerId = null;
   s.roundResult = null;
   s.phase = 'playing';
 
@@ -64,7 +67,8 @@ function startRound(prev, rng = Math.random) {
   }
   s.discardPile.push(card);
 
-  s.roundStarter = nextActive(s, s.roundStarter);
+  const active = s.players.map((p, i) => ({ ...p, index: i })).filter((p) => !p.eliminated);
+  s.roundStarter = s.round === 1 ? 0 : active.reduce((best, p) => p.score < best.score ? p : best).index;
   s.currentPlayer = s.roundStarter;
   s.lastEvent = { type: 'ROUND_START', round: s.round };
   return s;
@@ -83,71 +87,98 @@ function createGame(playerConfigs, rng = Math.random) {
     drawPile: [], discardPile: [],
     currentPlayer: 0, roundStarter: -1, round: 0,
     phase: 'playing',            // 'playing' | 'roundOver' | 'gameOver'
-    pendingDraw: 0,              // cards the next player must draw (stacked 2s / Ace of Spades)
-    chosenSuit: null,            // suit named by the last Jack
-    drawnCardId: null,           // set after a draw when the drawn card is playable
+    pendingDraw: 0, pendingType: null, pendingSkip: false,
+    chosenSuit: null, chosenRank: null,
     roundResult: null, winnerId: null, lastEvent: null,
   };
   return startRound(base, rng);
 }
 
 // ---- ending a round ----
-function endRound(s, winnerIdx, reason) {
-  const winner = s.players[winnerIdx];
+function endRound(s, endedByIdx, reason) {
+  const endedBy = s.players[endedByIdx].id;
   const points = {};
-  const eliminatedIds = [];
-  s.players.forEach((p, i) => {
-    if (p.eliminated || i === winnerIdx) return;
+  const active = s.players.filter((p) => !p.eliminated);
+  active.forEach((p) => {
     const pts = handPoints(p.hand);
     points[p.id] = pts;
     p.score += pts;
-    if (p.score >= RULES.eliminationScore) {
+  });
+  const survivor = active.every((p) => p.score >= RULES.eliminationScore)
+    ? active.reduce((best, p) => p.score < best.score ? p : best)
+    : null;
+  const eliminatedIds = [];
+  active.forEach((p) => {
+    if (p.score >= RULES.eliminationScore && p !== survivor) {
       p.eliminated = true;
       eliminatedIds.push(p.id);
     }
   });
-  s.roundResult = { winnerId: winner.id, reason, points, eliminatedIds };
+  s.roundResult = { endedBy, winnerId: reason === 'EMPTY_HAND' ? endedBy : null, reason, points, eliminatedIds };
   const remaining = s.players.filter((p) => !p.eliminated);
   if (remaining.length <= 1) {
     s.phase = 'gameOver';
-    s.winnerId = remaining[0].id;
+    s.winnerId = remaining[0]?.id ?? null;
   } else {
     s.phase = 'roundOver';
   }
-  s.drawnCardId = null;
+  s.pendingDraw = 0;
+  s.pendingType = null;
+  s.pendingSkip = false;
+  s.chosenSuit = null;
+  s.chosenRank = null;
   s.lastEvent = { type: 'ROUND_END', ...s.roundResult };
 }
 
 // ---- player actions ----
-function playCard(state, { cardId, chosenSuit }, rng = Math.random) {
+function playCard(state, { cardId, chosenSuit, chosenRank } = {}, rng = Math.random) {
   if (state.phase !== 'playing') return invalid(state, 'NOT_PLAYING');
   const idx = state.currentPlayer;
   const card = state.players[idx].hand.find((c) => c.id === cardId);
   if (!card) return invalid(state, 'CARD_NOT_IN_HAND');
-  if (state.drawnCardId && card.id !== state.drawnCardId) return invalid(state, 'ONLY_DRAWN_CARD');
   if (!R.isLegalPlay(state, card)) return invalid(state, 'ILLEGAL_CARD');
-  if (R.isJack(card) && !SUITS.includes(chosenSuit)) return invalid(state, 'JACK_NEEDS_SUIT');
+  if (R.isJack(card)) {
+    const suitDemand = SUITS.includes(chosenSuit) && chosenRank == null;
+    const rankDemand = RANKS.includes(chosenRank) && chosenSuit == null;
+    if (!suitDemand && !rankDemand) return invalid(state, 'JACK_NEEDS_DEMAND');
+  }
 
   const s = clone(state);
   const player = s.players[idx];
   player.hand = player.hand.filter((c) => c.id !== cardId);
   s.discardPile.push(card);
-  s.chosenSuit = R.isJack(card) ? chosenSuit : null;
-  s.drawnCardId = null;
-  s.lastEvent = { type: 'PLAY', playerId: player.id, card, chosenSuit: s.chosenSuit };
+  s.chosenSuit = R.isJack(card) ? chosenSuit ?? null : null;
+  s.chosenRank = R.isJack(card) ? chosenRank ?? null : null;
+  s.pendingSkip = false;
+  s.lastEvent = { type: 'PLAY', playerId: player.id, card,
+    chosenSuit: s.chosenSuit, chosenRank: s.chosenRank, skippedId: null };
 
   if (R.isSevenOfHearts(card)) { endRound(s, idx, 'SEVEN_OF_HEARTS'); return s; }
   if (player.hand.length === 0) { endRound(s, idx, 'EMPTY_HAND'); return s; }
 
-  if (R.isTwo(card)) s.pendingDraw += RULES.twoPenalty;
-  if (R.isAceOfSpades(card)) s.pendingDraw += RULES.aceOfSpadesPenalty;
-  s.currentPlayer = nextActive(s, idx, R.isEight(card) ? 2 : 1); // an 8 skips one player
+  if (R.isTwo(card)) {
+    s.pendingDraw += RULES.twoPenalty;
+    s.pendingType = 'two';
+  }
+  if (R.isAceOfSpades(card) || (card.rank === 'A' && s.pendingType === 'ace')) {
+    s.pendingDraw += RULES.aceOfSpadesPenalty;
+    s.pendingType = 'ace';
+  }
+  s.currentPlayer = nextActive(s, idx);
+  if (R.isEight(card)) {
+    const next = s.players[s.currentPlayer];
+    if (next.hand.some(R.isEight)) s.pendingSkip = true;
+    else {
+      s.lastEvent.skippedId = next.id;
+      s.currentPlayer = nextActive(s, s.currentPlayer);
+    }
+  }
   return s;
 }
 
 function drawCard(state, rng = Math.random) {
   if (state.phase !== 'playing') return invalid(state, 'NOT_PLAYING');
-  if (state.drawnCardId) return invalid(state, 'ALREADY_DRAWN');
+  if (state.pendingSkip) return invalid(state, 'SKIP_PENDING');
   const s = clone(state);
   const player = s.players[s.currentPlayer];
 
@@ -156,6 +187,7 @@ function drawCard(state, rng = Math.random) {
     player.hand.push(...drawn);
     s.lastEvent = { type: 'PENALTY_DRAW', playerId: player.id, count: drawn.length };
     s.pendingDraw = 0;
+    s.pendingType = null;
     s.currentPlayer = nextActive(s, s.currentPlayer);
     return s;
   }
@@ -167,20 +199,18 @@ function drawCard(state, rng = Math.random) {
     return s;
   }
   player.hand.push(drawn[0]);
-  const playable = R.isLegalPlay(s, drawn[0]);
-  s.lastEvent = { type: 'DRAW', playerId: player.id, card: drawn[0], playable };
-  if (playable) s.drawnCardId = drawn[0].id;     // player may play it or pass
-  else s.currentPlayer = nextActive(s, s.currentPlayer);
+  s.lastEvent = { type: 'DRAW', playerId: player.id, card: drawn[0] };
+  s.currentPlayer = nextActive(s, s.currentPlayer);
   return s;
 }
 
-// After drawing a playable card, the player may choose to keep it and end the turn.
+// Accept an 8's skip instead of countering with another 8.
 function passTurn(state) {
   if (state.phase !== 'playing') return invalid(state, 'NOT_PLAYING');
-  if (!state.drawnCardId) return invalid(state, 'MUST_DRAW_FIRST');
+  if (!state.pendingSkip) return invalid(state, 'NOTHING_TO_PASS');
   const s = clone(state);
-  s.lastEvent = { type: 'PASS', playerId: s.players[s.currentPlayer].id };
-  s.drawnCardId = null;
+  s.lastEvent = { type: 'SKIP', playerId: s.players[s.currentPlayer].id };
+  s.pendingSkip = false;
   s.currentPlayer = nextActive(s, s.currentPlayer);
   return s;
 }
