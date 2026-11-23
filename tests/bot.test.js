@@ -52,6 +52,46 @@ test('bot makes only legal moves through 200 seeded bot rounds without mutating 
   }
 });
 
+test('500 seeded full bot games finish within 5000 moves with exactly one winner', () => {
+  for (let seed = 1; seed <= 500; seed++) {
+    const playerCount = 2 + (seed - 1) % 5;
+    const context = `seed=${seed}, players=${playerCount}`;
+    try {
+      const rng = seeded(seed);
+      const players = Array.from({ length: playerCount }, (_, i) => ({
+        name: `Bot ${i}`, isBot: true,
+      }));
+      let state = E.createGame(players, rng);
+      let moves = 0;
+      // Count round transitions too, so the limit bounds the entire simulation.
+      while (state.phase !== 'gameOver' && moves < 5000) {
+        const action = state.phase === 'roundOver'
+          ? { type: 'NEXT_ROUND' }
+          : chooseBotMove(state);
+        switch (action.type) {
+          case 'NEXT_ROUND': state = E.nextRound(state, rng); break;
+          case 'PLAY_CARD': state = E.playCard(state, action, rng); break;
+          case 'DRAW': state = E.drawCard(state, rng); break;
+          case 'PASS': state = E.passTurn(state); break;
+          default: assert.fail(`Unexpected action: ${JSON.stringify(action)}`);
+        }
+        moves++;
+        assert.notEqual(state.lastEvent.type, 'INVALID',
+          `${context}, move=${moves}, action=${JSON.stringify(action)}, event=${JSON.stringify(state.lastEvent)}`);
+      }
+      assert.equal(state.phase, 'gameOver', `${context}: exceeded 5000 moves`);
+      const survivors = state.players.filter((player) => !player.eliminated);
+      assert.equal(survivors.length, 1, `${context}: expected exactly one surviving winner`);
+      assert.equal(state.winnerId, survivors[0].id, `${context}: winner must be the sole survivor`);
+      assert.equal(state.players.filter((player) => player.id === state.winnerId).length, 1,
+        `${context}: winner must identify exactly one player`);
+    } catch (error) {
+      error.message = `${context}: ${error.message}`;
+      throw error;
+    }
+  }
+});
+
 test('bot prioritizes the playable 7 of hearts over specials and high cards', () => {
   const state = setup([c('K', 'hearts'), c('2', 'hearts'), c('7', 'hearts')]);
   assert.deepEqual(chooseBotMove(state), { type: 'PLAY_CARD', cardId: '7-hearts' });
