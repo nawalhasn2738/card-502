@@ -11,7 +11,7 @@ function jackSuit(state, jack) {
   const hand = state.players[state.currentPlayer].hand.filter((card) => card.id !== jack.id);
   const counts = SUITS.map((suit) => hand.filter((card) => card.suit === suit).length);
   // Prefer the table suit on ties, including when the Jack is the last card.
-  let suit = topCard(state).suit;
+  let suit = topCard(state)?.suit || SUITS[0];
   for (const candidate of SUITS) {
     if (counts[SUITS.indexOf(candidate)] > counts[SUITS.indexOf(suit)]) suit = candidate;
   }
@@ -29,7 +29,7 @@ function chooseBotMove(state) {
     else {
       const next = state.players[nextActive(state, state.currentPlayer)];
       const special = others.find((entry) => isTwo(entry) || isAceOfSpades(entry) || isEight(entry));
-      card = next.hand.length <= 3 && special ? special : highestPoints(others);
+      card = next && next.hand.length <= 3 && special ? special : highestPoints(others);
     }
   } else if (seven) {
     const remaining = state.players[state.currentPlayer].hand.filter((entry) => entry.id !== seven.id);

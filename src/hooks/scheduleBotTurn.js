@@ -1,7 +1,8 @@
 const { chooseBotMove } = require('../logic/bot');
 
 function scheduleBotTurn(state, dispatch, schedule = setTimeout, cancel = clearTimeout) {
-  if (state?.phase !== 'playing' || state.players[state.currentPlayer].isBot !== true) return;
+  const player = state?.players?.[state.currentPlayer];
+  if (state?.phase !== 'playing' || !player || player.eliminated || player.isBot !== true) return;
   let active = true;
   const timer = schedule(() => {
     if (!active) return;

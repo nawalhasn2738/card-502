@@ -113,7 +113,7 @@ test('Restart fully resets mid-round and both end-screen actions start playable 
       assert.equal(next.chosenSuit, null);
       assert.equal(next.pendingType, null);
       assert.equal(next.pendingSkip, false);
-      assert.equal(next.chosenRank, null);
+      assert.equal('chosenRank' in next, false);
       assert.equal('drawnCardId' in next, false);
       assert.equal(next.roundResult, null);
       if (type === 'RESTART' || phase === 'gameOver') {
@@ -209,4 +209,320 @@ test('a scheduled bot can accept a skip and advance to the next active player', 
   assert.equal(state.pendingSkip, false);
   assert.equal(state.currentPlayer, 2);
   assert.deepEqual(state.lastEvent, { type: 'SKIP', playerId: 'p1' });
+});
+
+test('null and malformed reducer actions preserve the game and report INVALID', () => {
+  const state = fresh();
+  const before = JSON.stringify(state);
+  for (const action of [null, undefined, false, 42, 'DRAW', [], {}, { type: 2 }]) {
+    assert.deepEqual(gameReducer(state, action), { ...state, lastEvent: { type: 'INVALID', reason: 'INVALID_ACTION' } });
+  }
+  for (const players of [undefined, null, [], [null, {}], [{ name: 'Only' }]]) {
+    assert.deepEqual(gameReducer(state, { type: 'START_GAME', players }), { ...state, lastEvent: { type: 'INVALID', reason: 'INVALID_PLAYERS' } });
+  }
+  assert.equal(JSON.stringify(state), before);
+  assert.equal(gameReducer(null, null), null);
+  assert.equal(gameReducer(null, { type: 'START_GAME', players: null }), null);
+});
+
+test('context dispatch supplies missing snapshots and preserves explicit stale snapshots', () => {
+  const { createGuardedDispatch } = require('../src/state/guardedDispatch');
+  let state = fresh();
+  let committed = state;
+  const queue = [];
+  const dispatch = createGuardedDispatch((action) => queue.push(action), () => committed);
+  dispatch({ type: 'DRAW' });
+  dispatch({ type: 'DRAW' });
+  assert.equal(queue[0].expectedState, committed);
+  state = gameReducer(state, queue.shift());
+  const once = state;
+  state = gameReducer(state, queue.shift());
+  assert.equal(state, once);
+  committed = state;
+  const oldState = fresh();
+  dispatch({ type: 'RESTART', expectedState: oldState });
+  assert.equal(queue[0].expectedState, oldState);
+  assert.equal(gameReducer(state, queue.shift()), state);
+  dispatch(null);
+  assert.equal(gameReducer(state, queue.shift()).lastEvent.reason, 'INVALID_ACTION');
+});
+
+test('reducer rejects obsolete rank buttons and accepts a suit demand', () => {
+  const state = fresh();
+  state.players[0].hand = [c('J', 'clubs'), c('3', 'hearts')];
+  const bad = gameReducer(state, { type: 'PLAY_CARD', cardId: 'J-clubs', chosenRank: 'A' });
+  assert.equal(bad.lastEvent.reason, 'JACK_NEEDS_SUIT');
+  assert.deepEqual(bad.players, state.players);
+  const good = gameReducer(state, { type: 'PLAY_CARD', cardId: 'J-clubs', chosenSuit: 'hearts' });
+  assert.equal(good.chosenSuit, 'hearts');
+  assert.equal('chosenRank' in good, false);
+});
+
+test('bot scheduling ignores an eliminated current player and missing seats', () => {
+  const state = fresh();
+  state.currentPlayer = 1;
+  state.players[1].eliminated = true;
+  const never = () => assert.fail('must not schedule a malformed/eliminated turn');
+  scheduleBotTurn(state, never, never);
+  scheduleBotTurn({ phase: 'playing', players: [] }, never, never);
+});
+
+// Integration coverage below runs the production dispatcher, reducer and bot
+// scheduler together. Explicit commits model batching; this is NOT a React mount.
+function integrationGame({ currentPlayer = 0, finalBotCard = false } = {}) {
+  const { createDeck } = require('../src/logic/deck');
+  const state = fresh();
+  const hands = [
+    [c('5', 'hearts'), c('6', 'clubs')],
+    finalBotCard ? [c('K', 'hearts')] : [c('K', 'hearts'), c('4', 'clubs')],
+    [c('9', 'clubs'), c('3', 'diamonds')],
+  ];
+  // Use real deck IDs and account for every card exactly once.
+  const deck = createDeck();
+  const card = (entry) => deck.find((x) => x.rank === entry.rank && x.suit === entry.suit);
+  state.players.forEach((player, index) => { player.hand = hands[index].map(card); });
+  state.discardPile = [card(c('9', 'hearts'))];
+  const used = new Set([...state.players.flatMap((player) => player.hand), ...state.discardPile].map((entry) => entry.id));
+  const drawn = card(c('3', 'spades'));
+  state.drawPile = [...deck.filter((entry) => !used.has(entry.id) && entry.id !== drawn.id), drawn];
+  state.currentPlayer = currentPlayer;
+  state.lastEvent = { type: 'ROUND_START', round: 1 };
+  return state;
+}
+
+function integrationStore(initial) {
+  const { createGuardedDispatch } = require('../src/state/guardedDispatch');
+  let reduced = initial;
+  let committed = initial;
+  const queue = [];
+  const transitions = [];
+  const dispatch = createGuardedDispatch((action) => queue.push(action), () => committed);
+  function reduceOne() {
+    assert.ok(queue.length, 'expected a queued action');
+    const action = queue.shift();
+    const before = reduced;
+    reduced = gameReducer(reduced, action);
+    transitions.push({ action, before, after: reduced });
+  }
+  return {
+    dispatch, queue, transitions, reduceOne,
+    commit() { committed = reduced; },
+    flush() { while (queue.length) reduceOne(); committed = reduced; },
+    get state() { return reduced; },
+    get committed() { return committed; },
+  };
+}
+
+function integrationTimers() {
+  let nextId = 0;
+  const active = new Map();
+  const callbacks = new Map();
+  const cancelled = [];
+  return {
+    active, callbacks, cancelled,
+    schedule(callback, delay) {
+      assert.equal(delay, 900);
+      const id = ++nextId;
+      active.set(id, callback);
+      callbacks.set(id, callback);
+      return id;
+    },
+    cancel(id) { cancelled.push(id); active.delete(id); },
+    fire(id, evenIfCancelled = false) {
+      const callback = evenIfCancelled ? callbacks.get(id) : active.get(id);
+      active.delete(id);
+      if (callback) callback();
+    },
+  };
+}
+
+function scheduleIntegrationBot(store, timers) {
+  return scheduleBotTurn(store.committed, store.dispatch, timers.schedule, timers.cancel);
+}
+
+test('integration: guarded dispatch rejects a second uncommitted turn and accepts the latest state', () => {
+  const initial = integrationGame();
+  const store = integrationStore(initial);
+  const dispatch = store.dispatch;
+  dispatch({ type: 'DRAW' });
+  dispatch({ type: 'DRAW' });
+  assert.equal(store.queue[0].expectedState, initial);
+  assert.equal(store.queue[1].expectedState, initial);
+  store.reduceOne();
+  const first = store.state;
+  assert.equal(store.committed, initial, 'commit has not occurred yet');
+  assert.equal(first.currentPlayer, 1);
+  assert.deepEqual(first.players.map((p) => p.hand.length), [3, 2, 2]);
+  assert.equal(first.players[0].hand.at(-1).id, '3S');
+  assert.equal(first.drawPile.length, initial.drawPile.length - 1);
+  assert.deepEqual(first.lastEvent, { type: 'DRAW', playerId: 'p0', card: { id: '3S', rank: '3', suit: 'spades' } });
+  store.reduceOne();
+  assert.equal(store.state, first, 'second queued draw cannot consume the bot turn');
+  store.commit();
+  assert.equal(store.committed, first);
+  assert.equal(store.dispatch, dispatch);
+  dispatch({ type: 'PLAY_CARD', cardId: 'KH' });
+  assert.equal(store.queue[0].expectedState, first);
+  store.flush();
+  const second = store.state;
+  assert.equal(second.currentPlayer, 2);
+  assert.deepEqual(second.players.map((p) => p.hand.length), [3, 1, 2]);
+  assert.equal(second.lastEvent.type, 'PLAY');
+  assert.equal(second.lastEvent.playerId, 'p1');
+  assert.equal(second.lastEvent.card.id, 'KH');
+  assert.equal(second.discardPile.at(-1).id, 'KH');
+  dispatch({ type: 'DRAW', expectedState: initial });
+  assert.equal(store.queue[0].expectedState, initial);
+  store.flush();
+  assert.equal(store.state, second);
+  assert.equal(store.dispatch, dispatch);
+  for (const malformed of [null, undefined, false, 42, [], {}, { type: 7 }]) {
+    assert.doesNotThrow(() => { dispatch(malformed); store.flush(); });
+    assert.deepEqual(store.state.players, second.players);
+    assert.equal(store.state.currentPlayer, 2);
+    assert.deepEqual(store.state.lastEvent, { type: 'INVALID', reason: 'INVALID_ACTION' });
+  }
+});
+
+test('integration: one bot timer dispatches one guarded reducer move and cleanup remains safe', () => {
+  const initial = integrationGame({ currentPlayer: 1 });
+  const store = integrationStore(initial);
+  const timers = integrationTimers();
+  const cleanup = scheduleIntegrationBot(store, timers);
+  assert.equal(timers.active.size, 1);
+  assert.equal(timers.callbacks.size, 1);
+  assert.equal(store.queue.length, 0);
+  const [id] = timers.active.keys();
+  timers.fire(id);
+  assert.equal(timers.active.size, 0);
+  assert.equal(store.queue.length, 1);
+  assert.deepEqual(store.queue[0], { type: 'PLAY_CARD', cardId: 'KH', expectedState: initial });
+  timers.fire(id, true); // emulate a scheduler invoking the same callback twice
+  assert.equal(store.queue.length, 1);
+  store.flush();
+  assert.equal(store.transitions.length, 1);
+  assert.equal(store.state.currentPlayer, 2);
+  assert.deepEqual(store.state.players.map((p) => p.hand.length), [2, 1, 2]);
+  assert.equal(store.state.lastEvent.type, 'PLAY');
+  assert.equal(store.state.lastEvent.playerId, 'p1');
+  assert.equal(store.state.discardPile.at(-1).id, 'KH');
+  assert.doesNotThrow(() => { cleanup(); cleanup(); });
+  assert.equal(timers.active.size, 0);
+  timers.fire(id, true);
+  assert.equal(store.queue.length, 0);
+});
+
+test('integration: cleanup before firing suppresses callbacks and repeated scheduling leaks no timers', () => {
+  const initial = integrationGame({ currentPlayer: 1 });
+  const store = integrationStore(initial);
+  const timers = integrationTimers();
+  for (let cycle = 0; cycle < 20; cycle++) {
+    const cleanup = scheduleIntegrationBot(store, timers);
+    assert.equal(timers.active.size, 1);
+    const [id] = timers.active.keys();
+    cleanup();
+    assert.equal(timers.active.size, 0);
+    timers.fire(id, true); // even an already-queued cancelled callback is inert
+    assert.equal(store.queue.length, 0);
+  }
+  assert.equal(timers.cancelled.length, 20);
+  assert.equal(store.state, initial);
+  assert.equal(store.transitions.length, 0);
+  const cleanup = scheduleIntegrationBot(store, timers);
+  assert.equal(timers.active.size, 1);
+  for (const id of timers.callbacks.keys()) timers.fire(id, true);
+  assert.equal(store.queue.length, 1, 'only the newest uncancelled timer dispatches');
+  store.flush();
+  assert.equal(store.state.currentPlayer, 2);
+  assert.equal(store.state.lastEvent.type, 'PLAY');
+  cleanup();
+  assert.equal(timers.active.size, 0);
+});
+
+test('integration: human, missing, eliminated and ended turns schedule no bot timer', () => {
+  const human = integrationGame();
+  const eliminated = integrationGame({ currentPlayer: 1 });
+  eliminated.players[1].eliminated = true;
+  const missing = { ...human, currentPlayer: 99 };
+  const cases = [human, missing, eliminated, null,
+    { ...human, players: [] }, { ...human, phase: 'roundOver', currentPlayer: 1 },
+    { ...human, phase: 'gameOver', currentPlayer: 1 }];
+  for (const state of cases) {
+    const store = integrationStore(state);
+    const timers = integrationTimers();
+    assert.equal(scheduleIntegrationBot(store, timers), undefined);
+    assert.equal(timers.active.size, 0);
+    assert.equal(timers.callbacks.size, 0);
+    assert.equal(store.queue.length, 0);
+    assert.equal(store.state, state);
+  }
+});
+
+test('integration: a bot callback after Restart preserves its stale snapshot and cannot alter the new game', () => {
+  const initial = integrationGame({ currentPlayer: 1 });
+  const store = integrationStore(initial);
+  const timers = integrationTimers();
+  const cleanup = scheduleIntegrationBot(store, timers);
+  const [id] = timers.active.keys();
+  store.dispatch({ type: 'RESTART' });
+  store.flush();
+  const restarted = store.state;
+  assert.notEqual(restarted, initial);
+  assert.equal(restarted.round, 1);
+  assert.equal(restarted.currentPlayer, 0);
+  assert.deepEqual(restarted.players.map((p) => p.hand.length), [7, 7, 7]);
+  assert.deepEqual(restarted.players.map((p) => p.score), [0, 0, 0]);
+  assert.deepEqual(restarted.lastEvent, { type: 'ROUND_START', round: 1 });
+  // Intentionally delay cleanup to exercise the reducer's race defense.
+  timers.fire(id);
+  assert.equal(store.queue.length, 1);
+  assert.equal(store.queue[0].expectedState, initial, 'guard must not replace the timer snapshot with the latest state');
+  store.flush();
+  assert.equal(store.state, restarted);
+  assert.equal(store.transitions.at(-1).before, restarted);
+  assert.equal(store.transitions.at(-1).after, restarted);
+  cleanup();
+  timers.fire(id, true);
+  assert.equal(store.queue.length, 0);
+  assert.equal(timers.active.size, 0);
+});
+
+test('integration: a bot callback after real round completion and NEXT_ROUND cannot alter the next round', () => {
+  const initial = integrationGame({ currentPlayer: 1, finalBotCard: true });
+  const store = integrationStore(initial);
+  const timers = integrationTimers();
+  const cleanup = scheduleIntegrationBot(store, timers);
+  const [id] = timers.active.keys();
+  store.dispatch({ type: 'PLAY_CARD', cardId: 'KH' });
+  store.flush();
+  const ended = store.state;
+  assert.equal(ended.phase, 'roundOver');
+  assert.equal(ended.roundResult.winnerId, 'p1');
+  assert.deepEqual(ended.roundResult.points, { p0: 10, p1: 0, p2: 10 });
+  store.dispatch({ type: 'NEXT_ROUND' });
+  assert.equal(store.queue[0].expectedState, ended);
+  store.flush();
+  const nextRound = store.state;
+  assert.equal(nextRound.phase, 'playing');
+  assert.equal(nextRound.round, 2);
+  assert.equal(nextRound.currentPlayer, 1);
+  assert.deepEqual(nextRound.players.map((p) => p.hand.length), [7, 7, 7]);
+  assert.deepEqual(nextRound.players.map((p) => p.score), [10, 0, 10]);
+  assert.deepEqual(nextRound.lastEvent, { type: 'ROUND_START', round: 2 });
+  timers.fire(id); // still old callback; no synthetic phase mutation in this test
+  assert.equal(store.queue[0].expectedState, initial);
+  store.flush();
+  assert.equal(store.state, nextRound);
+  cleanup();
+  assert.equal(timers.active.size, 0);
+  const newCleanup = scheduleIntegrationBot(store, timers);
+  assert.equal(timers.active.size, 1);
+  const [newId] = timers.active.keys();
+  timers.fire(newId);
+  assert.equal(store.queue[0].expectedState, nextRound);
+  store.flush();
+  assert.notEqual(store.state, nextRound);
+  assert.notEqual(store.state.lastEvent.type, 'INVALID');
+  newCleanup();
+  assert.equal(timers.active.size, 0);
 });
