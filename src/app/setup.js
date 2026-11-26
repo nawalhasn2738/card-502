@@ -3,7 +3,7 @@ import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput,
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
-  FadeInDown, ZoomIn, ZoomOut, useAnimatedStyle, useSharedValue, withSpring,
+  FadeInDown, ZoomIn, useAnimatedStyle, useSharedValue, withSpring,
 } from 'react-native-reanimated';
 import Svg, { Defs, Ellipse, RadialGradient, Stop } from 'react-native-svg';
 import Backdrop from '../components/Backdrop';
@@ -41,13 +41,16 @@ function PreviewSeat({ x, y, name, color, isHuman }) {
     px.value = withSpring(x, { damping: 16, stiffness: 160 });
     py.value = withSpring(y, { damping: 16, stiffness: 160 });
   }, [x, y, px, py]);
-  const pos = useAnimatedStyle(() => ({ transform: [{ translateX: px.value - 30 }, { translateY: py.value - 26 }] }));
+  const pop = useSharedValue(0);
+  useEffect(() => { pop.value = withSpring(1, { damping: 13, stiffness: 180 }); }, [pop]);
+  const pos = useAnimatedStyle(() => ({
+    opacity: Math.min(1, pop.value * 1.5),
+    transform: [{ translateX: px.value - 30 }, { translateY: py.value - 26 }, { scale: 0.4 + 0.6 * pop.value }],
+  }));
   return (
     <Animated.View style={[styles.seat, pos]}>
-      <Animated.View entering={ZoomIn.springify().damping(14)} exiting={ZoomOut.duration(160)} style={{ alignItems: 'center' }}>
-        <Avatar name={name} color={color} size={isHuman ? 42 : 36} isBot={!isHuman} active={isHuman} />
-        <Text numberOfLines={1} style={[styles.seatName, isHuman && { color: colors.gold }]}>{name}</Text>
-      </Animated.View>
+      <Avatar name={name} color={color} size={isHuman ? 42 : 36} isBot={!isHuman} active={isHuman} />
+      <Text numberOfLines={1} style={[styles.seatName, isHuman && { color: colors.gold }]}>{name}</Text>
     </Animated.View>
   );
 }

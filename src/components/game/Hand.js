@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, {
-  Keyframe, useAnimatedStyle, useSharedValue, withSequence, withSpring, withTiming,
+  Easing, useAnimatedStyle, useSharedValue, withDelay, withSequence, withSpring, withTiming,
 } from 'react-native-reanimated';
 import {
   GestureDetector, ScrollView, useCompetingGestures, usePanGesture, useTapGesture,
@@ -9,12 +9,6 @@ import {
 import PlayingCard, { CARD_RATIO } from '../PlayingCard';
 import { longLabel } from '../../ui/cards';
 import { colors } from '../../ui/theme';
-
-const dealIn = (delay) => new Keyframe({
-  0: { opacity: 0, transform: [{ translateY: -190 }, { scale: 0.6 }, { rotate: '-14deg' }] },
-  70: { opacity: 1 },
-  100: { opacity: 1, transform: [{ translateY: 0 }, { scale: 1 }, { rotate: '0deg' }] },
-}).duration(420).delay(delay);
 
 const HandCard = memo(function HandCard({
   card, x, rot, arc, width, playable, selected, dim, interactive, onTap, onSwipe, shakeKey, enterDelay, z,
@@ -27,7 +21,23 @@ const HandCard = memo(function HandCard({
   useEffect(() => {
     posX.value = withSpring(x, { damping: 18, stiffness: 180 });
   }, [x, posX]);
-  const slotStyle = useAnimatedStyle(() => ({ transform: [{ translateX: posX.value }] }));
+  // Deal-in is driven by a shared value too: layout `entering` animations can
+  // leave stale offsets behind when sibling cards are removed mid-animation.
+  const enter = useSharedValue(enterDelay >= 0 ? 0 : 1);
+  useEffect(() => {
+    if (enterDelay >= 0) {
+      enter.value = withDelay(enterDelay, withTiming(1, { duration: 420, easing: Easing.out(Easing.cubic) }));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount only
+  const slotStyle = useAnimatedStyle(() => ({
+    opacity: Math.min(1, enter.value * 1.6),
+    transform: [
+      { translateX: posX.value },
+      { translateY: -190 * (1 - enter.value) },
+      { scale: 0.6 + 0.4 * enter.value },
+      { rotate: `${-14 * (1 - enter.value)}deg` },
+    ],
+  }));
   const shake = useSharedValue(0);
   const tapRef = useRef(onTap); tapRef.current = onTap;
   const swipeRef = useRef(onSwipe); swipeRef.current = onSwipe;
@@ -73,7 +83,6 @@ const HandCard = memo(function HandCard({
   const radius = width * 0.12;
   return (
     <Animated.View style={[styles.slot, { zIndex: selected ? 100 : z }, slotStyle]} pointerEvents="box-none">
-      <Animated.View entering={enterDelay >= 0 ? dealIn(enterDelay) : undefined} pointerEvents="box-none">
       <GestureDetector gesture={gesture}>
         <Animated.View
           style={style}
@@ -87,7 +96,6 @@ const HandCard = memo(function HandCard({
           {selected && <View pointerEvents="none" style={[styles.selected, { borderRadius: radius + 2 }]} />}
         </Animated.View>
       </GestureDetector>
-      </Animated.View>
     </Animated.View>
   );
 });
