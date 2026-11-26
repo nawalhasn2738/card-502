@@ -1,9 +1,9 @@
 # 502 Card Game
 
 An Expo / React Native implementation of 502 with a pure JavaScript game engine,
-computer players, shared game state, and a temporary phone debugging screen.
+computer players, shared game state, and a full mobile UI built with Expo Router.
 
-The current app starts a three-player game with **Nawal**, **Bot 1**, and **Bot 2**.
+You play against 1–5 bots: Home → Setup → Game table → Round results → Game over.
 The project uses Expo SDK 58, React 19.3, and React Native 0.88.1.
 
 ## Run locally
@@ -71,6 +71,27 @@ Bot turns wait 900 ms. Timers are one-shot, cancelled on state changes/unmount,
 and carry explicit snapshots so stale callbacks cannot change a restarted game
 or a later round. Human elimination does not stop eligible bot turns.
 
+## Screens and UI
+
+| Route | Screen |
+| --- | --- |
+| `src/app/index.js` | Home: animated hero, Play vs Bots, Continue game, How to play |
+| `src/app/setup.js` | Your name and 1–5 bots, with a live seat preview |
+| `src/app/game.js` | The table: opponents, piles, status banner, your hand and actions |
+| `src/app/results.js` | Round results: points added, leftover cards, totals toward 502, eliminations |
+| `src/app/game-over.js` | Champion, final standings, Play again / Players / Home |
+| `src/app/rules.js` | How to play and card values |
+| `src/app/debug.js` | Dev only: long-press the "502" title on Home |
+
+The UI reads state only through `useGame()` and sends actions through its guarded
+dispatch; `useBotTurns()` is called once, by the game screen. Reusable pieces live in
+`src/components/` (cards, buttons, avatars, sheets) and `src/components/game/`
+(table parts); display-only helpers and design tokens live in `src/ui/`.
+
+Playing a card: tap a glowing card to select it, then tap it again, press **Play**, or
+swipe it up. Jacks open a suit picker. Draw, Take N (penalty) and Accept skip appear
+as the situation requires. Android back opens the pause menu.
+
 ## Debug screen
 
 The temporary screen provides playable-card highlighting, Draw, Accept skip,
@@ -122,7 +143,10 @@ package downloads; a passing logic suite is not a substitute for those checks.
 | `src/logic/` | CommonJS engine, legal moves, scoring, deck, and bot strategy |
 | `src/state/` | Reducer, context, guarded dispatch, and input cooldown |
 | `src/hooks/` | Bot scheduling and React lifecycle integration |
-| `src/screens/DebugScreen.js` | Temporary phone testing interface |
+| `src/app/` | Expo Router screens (see Screens and UI) |
+| `src/components/` | Reusable UI components and table parts |
+| `src/ui/` | Theme tokens, display helpers, haptics |
+| `src/screens/DebugScreen.js` | Temporary phone testing interface (dev route `/debug`) |
 | `tests/engine.test.js` | Engine/scoring/validation regressions |
 | `tests/bot.test.js` | Bot decisions and 500-game stress test |
 | `tests/state.test.js` | Reducer, dispatch, timer, and integration regressions |
